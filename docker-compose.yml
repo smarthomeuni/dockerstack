@@ -1,0 +1,452 @@
+##Reference: https://www.smarthomebeginner.com/traefik-reverse-proxy-tutorial-for-docker
+#Requirement: Set environmental variables: ${$USERDIR}, ${PUID}, ${PGID}, ${TZ}, ${DOMAINNAME}, ${CLOUDFLARE_EMAIL},  ${CLOUDFLARE_API_KEY}, ${HTTP_USERNAME}, ${HTTP_PASSWORD}, etc. as explained in the reference.
+
+version: "3.6"
+services:
+
+  zerotier:
+    image: croc/zerotier
+    container_name: zerotier
+    env_file:
+     - ./envfiles/zerotier.env
+    volumes:
+      - './config/route.list:/config/route.list:ro'
+    network_mode: host
+    privileged: true
+    restart: always
+
+# Traefik Reverse Proxy
+  traefik:
+    hostname: traefik
+    image: traefik:latest
+    container_name: traefik
+    restart: always
+    domainname: ${DOMAINNAME}
+    networks:
+      - default
+      - traefik_proxy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    env_file:
+     - ./envfiles/traefik.env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=traefik"
+      - "traefik.frontend.rule=Host:traefik.${DOMAINNAME}"  
+      - "traefik.port=8080"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.frontend.headers.SSLRedirect=true"
+      - "traefik.frontend.headers.STSSeconds=315360000"
+      - "traefik.frontend.headers.browserXSSFilter=true"
+      - "traefik.frontend.headers.contentTypeNosniff=true"
+      - "traefik.frontend.headers.forceSTSHeader=true"
+      - "traefik.frontend.headers.SSLHost=example.com"
+      - "traefik.frontend.headers.STSIncludeSubdomains=true"
+      - "traefik.frontend.headers.STSPreload=true"
+      - "traefik.frontend.headers.frameDeny=true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${USERDIR}/docker/traefik:/etc/traefik
+      - ${USERDIR}/docker/shared:/shared
+
+# NextCloud – Your Own Cloud Storage
+  nextcloud:
+    container_name: nextcloud
+    restart: always
+    image: linuxserver/nextcloud
+    volumes:
+      - ${USERDIR}/docker/nextcloud:/config
+      - ${USERDIR}/shared_data:/data
+      - ${USERDIR}/docker/shared:/shared
+    ports:
+      - 443
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+    networks:
+      - traefik_proxy
+      - default
+    links:
+      - db
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=nextcloud"
+      - "traefik.frontend.rule=Host:nextcloud.${DOMAINNAME}"
+      - "traefik.port=443"
+      - "traefik.protocol=https"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.frontend.headers.SSLRedirect=true"
+      - "traefik.frontend.headers.STSSeconds=315360000"
+      - "traefik.frontend.headers.browserXSSFilter=true"
+      - "traefik.frontend.headers.contentTypeNosniff=true"
+      - "traefik.frontend.headers.forceSTSHeader=true"
+      - "traefik.frontend.headers.SSLHost=example.com"
+      - "traefik.frontend.headers.STSIncludeSubdomains=true"
+      - "traefik.frontend.headers.STSPreload=true"
+      - "traefik.frontend.headers.frameDeny=true"
+
+  cloud9:
+    container_name: cloud9
+    ports:
+      - 8001:80
+    volumes:
+      - ${USERDIR}:/workspace/
+    image: kdelfour/cloud9-docker
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+
+# Home Assistant - Smart Home Hub
+  homeassistant:
+    container_name: homeassistant
+    restart: always
+    image: homeassistant/home-assistant:latest
+    devices:
+#      - /dev/ttyUSB0:/dev/ttyUSB0
+#      - /dev/ttyUSB1:/dev/ttyUSB1
+      - /dev/ttyACM0:/dev/ttyACM0
+    volumes:
+      - ${USERDIR}/docker/hass:/config
+      - /etc/localtime:/etc/localtime:ro
+      - ${USERDIR}/docker/shared:/shared
+    ports:
+      - "8123:8123"
+    privileged: true
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    network_mode: "host"
+    labels:
+      - "traefik.enable=false"
+
+  influxdb:
+    image: influxdb
+    container_name: hass-influxdb
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: 172.22.0.101
+    volumes:
+      - ${USERDIR}/docker/influxdb:/var/lib/influxdb
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+    env_file:
+      - ./envfiles/influxdb.env
+
+  grafana:
+    image: grafana/grafana
+    container_name: hass-grafana
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+    volumes:
+      - ${USERDIR}/docker/grafana:/var/lib/grafana
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 3001:3000/tcp
+    networks:
+      default:
+        ipv4_address: 172.22.0.102
+    env_file:
+      - ./envfiles/grafana.env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=grafana"
+      - "traefik.frontend.rule=Host:grafana.${DOMAINNAME}"
+      - "traefik.port=3000"
+      - "traefik.protocol=http"
+      - "traefik.docker.network=traefik_proxy"
+
+  mosquitto:
+    container_name: mosquitto
+    restart: unless-stopped
+    image: eclipse-mosquitto
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+    networks:
+      default:
+        ipv4_address: 172.22.0.103
+    volumes:
+      - ${USERDIR}/docker/mosquitto/data:/mosquitto/data
+      - ${USERDIR}/docker/mosquitto/log:/mosquitto/log
+      - ${USERDIR}/docker/mosquitto/config:/mosquitto/config
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+      - "8883:8883"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=mqtt"
+      - "traefik.frontend.rule=Host:mqtt.${DOMAINNAME}"
+      - "traefik.port=9001"
+#      - "traefik.passHostHeader=true"
+      - "traefik.protocol=ws"
+#      - 'traefik.frontend.entryPoints=https'
+
+  glances:
+    container_name: glances
+    image: vimagick/glances
+    volumes:
+      - ${USERDIR}/docker/glances/:/etc/glances
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - GLANCES_OPT=-w
+#    net: host
+#    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+    restart: always
+    network_mode: "host"
+    ports:
+      - "61208:61208"
+
+  deconz:
+    image: marthoc/deconz
+    container_name: deconz
+#    network_mode: host
+    networks:
+      default:
+        ipv4_address: 172.22.0.7
+    restart: always
+    ports:
+      - "8089:8089"
+      - "444:444"
+    volumes:
+      - ${USERDIR}/docker/deconz:/root/.local/share/dresden-elektronik/deCONZ
+    devices:
+      - /dev/ttyUSB0
+    environment:
+      - DECONZ_WEB_PORT=8089
+      - DECONZ_WS_PORT=445
+      - DEBUG_INFO=1
+      - DEBUG_APS=0
+      - DEBUG_ZCL=0
+      - DEBUG_ZDP=0
+      - DEBUG_OTAU=0
+
+  motioneye:
+    image: ccrisan/motioneye:master-amd64
+    container_name: motioneye
+    ports:
+      - "8081:8081"
+      - "8765:8765"
+    volumes:
+      - ${USERDIR}/docker/motion/etc:/etc/motioneye
+      - ${USERDIR}/docker/motion/media:/var/lib/motioneye
+    networks:
+      - traefik_proxy
+      - default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.port=8765"
+      - "traefik.protocol=http"
+      - "traefik.backend=cctv"
+      - "traefik.frontend.rule=Host:cctv.${DOMAINNAME}"
+      - "traefik.docker.network=traefik_proxy"
+
+  ghost:
+    image: ghost:latest
+    container_name: ghost1
+    restart: always
+    ports:
+      - 2368
+    links: 
+      - db
+    env_file:
+     - ./envfiles/ghost.env
+    networks:
+      - traefik_proxy
+      - default
+    volumes:
+      - ${USERDIR}/docker/ghost:/var/lib/ghost/content
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=blog"
+      - "traefik.protocol=http"
+      - "traefik.frontend.rule=Host:blog.${DOMAINNAME}"
+      - "traefik.docker.network=traefik_proxy"
+
+  db:
+    container_name: db
+    image: mariadb
+    restart: always
+    networks:
+      default:
+        ipv4_address: 172.22.0.50
+    volumes:
+      - ${USERDIR}/docker/mariadbNEW:/var/lib/mysql
+    env_file:
+     - ./envfiles/mariadb.env
+
+  heimdall:
+    image: linuxserver/heimdall
+    container_name: heimdall
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+#      - FORCE_HTTPS=true
+    volumes:
+      - ${USERDIR}/docker/heimdall:/config
+      - ${USERDIR}/docker/shared:/shared
+    ports:
+      - 80
+      - 443
+    restart: unless-stopped
+    networks:
+      - traefik_proxy
+      - default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=heimdall"
+      - "traefik.frontend.rule=Host:home.${DOMAINNAME}"  
+      - "traefik.port=80"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.protocol=http"
+
+  phpmyadmin:
+    hostname: phpmyadmin
+    container_name: phpmyadmin
+    image: phpmyadmin/phpmyadmin
+    restart: always
+    links:
+      - db
+    ports:
+      - 80
+    env_file:
+     - ./envfiles/pma.env
+    networks:
+      - traefik_proxy
+      - default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=pma"
+      - "traefik.frontend.rule=Host:pma.${DOMAINNAME}"
+      - "traefik.port=80"
+      - "traefik.docker.network=traefik_proxy" 
+      - "traefik.protocol=http"
+
+  cloudberry-backup:
+    hostname: cloudberry
+    container_name: cloudberry
+    image: jlesage/cloudberry-backup
+    restart: always
+    ports:
+      - "5800:5800"
+    volumes:
+      - ${USERDIR}/docker/cloudberry-backup:/config:rw
+      - /mnt/3TB:/storage:ro
+
+  portainer:
+    image: portainer/portainer
+    container_name: portainer
+    restart: always
+    command: -H unix:///var/run/docker.sock
+    ports:
+      - 9000:9000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${USERDIR}/docker/portainer/data:/data
+      - ${USERDIR}/docker/shared:/shared
+    environment:
+      - TZ=${TZ}
+    networks:
+#      - default
+      - traefik_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=portainer"
+      - "traefik.frontend.rule=Host:portainer.${DOMAINNAME}"  
+#      - "traefik.frontend.rule=Host:${DOMAINNAME}; PathPrefixStrip: /portainer"
+      - "traefik.port=9000"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.protocol=http"
+
+  netdata:
+    container_name: netdata
+    image: netdata/netdata
+#    hostname: example.com # set to fqdn of host
+    ports:
+      - 19999:19999
+    networks:
+      - traefik_proxy
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=netdata"
+      - "traefik.frontend.rule=Host:netdata.${DOMAINNAME}"
+#      - "traefik.frontend.rule=Host:${DOMAINNAME}; PathPrefixStrip: /portainer"
+      - "traefik.port=19999"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.frontend.headers.SSLRedirect=true"
+      - "traefik.frontend.headers.STSSeconds=315360000"
+      - "traefik.frontend.headers.browserXSSFilter=true"
+      - "traefik.frontend.headers.contentTypeNosniff=true"
+      - "traefik.frontend.headers.forceSTSHeader=true"
+      - "traefik.frontend.headers.SSLHost=example.com"
+      - "traefik.frontend.headers.STSIncludeSubdomains=true"
+      - "traefik.frontend.headers.STSPreload=true"
+      - "traefik.frontend.headers.frameDeny=true"
+
+#  guacamole3:
+#    image: oznu/guacamole
+#    container_name: guacamole3
+#    volumes:
+#      - postgres:/config
+#    ports:
+#      - 8085:8080
+
+  machinery:
+    container_name: ker-machinery
+    image: kerberos/machinery
+    ports:
+    - "8889:8889" 
+    volumes:
+    - kerberos-config:/etc/opt/kerberosio/config
+    - kerberos-capture:/etc/opt/kerberosio/capture
+    - kerberos-logs:/etc/opt/kerberosio/logs
+
+  web:
+    container_name: kerberos
+    image: kerberos/web
+    environment:
+    - KERBEROSIO_SECURE_SSL=false
+    ports:
+    - "8082:80"
+    volumes:
+    - kerberos-config:/etc/opt/kerberosio/config
+    - kerberos-capture:/etc/opt/kerberosio/capture
+    - kerberos-logs:/etc/opt/kerberosio/logs
+
+volumes:
+  kerberos-config:
+  kerberos-capture:
+  kerberos-logs:
+  postgres:
+    driver: local
+
+networks:
+  traefik_proxy:
+    external:
+      name: traefik_proxy    
+#        ipam:
+#        config:
+#          - subnet: 172.18.0.0/24
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
