@@ -3,7 +3,6 @@
 
 version: "3.6"
 services:
-
   zerotier:
     image: croc/zerotier
     container_name: zerotier
@@ -18,7 +17,8 @@ services:
 # Traefik Reverse Proxy
   traefik:
     hostname: traefik
-    image: traefik:latest
+#    image: traefik:latest
+    image: traefik:v1.7.16
     container_name: traefik
     restart: always
     domainname: ${DOMAINNAME}
@@ -50,6 +50,25 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${USERDIR}/docker/traefik:/etc/traefik
       - ${USERDIR}/docker/shared:/shared
+      
+  bitwarden:
+    image: bitwardenrs/server
+    restart: always
+    volumes:
+      - ${USERDIR}/docker/bw-data:/data
+    environment:
+      WEBSOCKET_ENABLED: 'true' # Required to use websockets
+#      SIGNUPS_ALLOWED: 'true'
+      SIGNUPS_ALLOWED: 'false'
+      ADMIN_TOKEN: 'random_token'
+    labels:
+        - traefik.enable=true
+        - traefik.docker.network=traefik_proxy
+        - traefik.web.frontend.rule=Host:bitwarden.${DOMAINNAME}
+        - traefik.web.port=80
+        - traefik.hub.frontend.rule=Host:bitwarden.${DOMAINNAME};Path:/notifications/hub
+        - traefik.hub.port=3012
+        - traefik.hub.protocol=ws
 
 # NextCloud – Your Own Cloud Storage
   nextcloud:
@@ -122,45 +141,63 @@ services:
     labels:
       - "traefik.enable=false"
 
-  influxdb:
-    image: influxdb
-    container_name: hass-influxdb
-    restart: unless-stopped
-    networks:
-      default:
-        ipv4_address: 172.22.0.101
-    volumes:
-      - ${USERDIR}/docker/influxdb:/var/lib/influxdb
-    environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
-    env_file:
-      - ./envfiles/influxdb.env
+  # influxdb:
+  #   image: influxdb
+  #   container_name: hass-influxdb
+  #   restart: unless-stopped
+  #   networks:
+  #     default:
+  #       ipv4_address: 172.22.0.101
+  #   volumes:
+  #     - ${USERDIR}/docker/influxdb:/var/lib/influxdb
+  #   environment:
+  #     - PUID=${PUID}
+  #     - PGID=${PGID}
+  #   env_file:
+  #     - ./envfiles/influxdb.env
 
-  grafana:
-    image: grafana/grafana
-    container_name: hass-grafana
-    restart: unless-stopped
-    environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
+  datascience-notebook:
+    image: jupyter/datascience-notebook
     volumes:
-      - ${USERDIR}/docker/grafana:/var/lib/grafana
-      - /etc/localtime:/etc/localtime:ro
+      - ${USERDIR}/docker/jupyter:/home/khalilkk/work
     ports:
-      - 3001:3000/tcp
-    networks:
-      default:
-        ipv4_address: 172.22.0.102
-    env_file:
-      - ./envfiles/grafana.env
+      - 8888:8888
+    container_name: datascience-notebook-container
     labels:
       - "traefik.enable=true"
-      - "traefik.backend=grafana"
-      - "traefik.frontend.rule=Host:grafana.${DOMAINNAME}"
-      - "traefik.port=3000"
+      - "traefik.backend=jupyter"
+      - "traefik.frontend.rule=Host:jupyter.${DOMAINNAME}"
+      - "traefik.port=8888"
       - "traefik.protocol=http"
       - "traefik.docker.network=traefik_proxy"
+    networks:
+      - traefik_proxy
+      - default
+
+  # grafana:
+  #   image: grafana/grafana
+  #   container_name: hass-grafana
+  #   restart: unless-stopped
+  #   environment:
+  #     - PUID=${PUID}
+  #     - PGID=${PGID}
+  #   volumes:
+  #     - ${USERDIR}/docker/grafana:/var/lib/grafana
+  #     - /etc/localtime:/etc/localtime:ro
+  #   ports:
+  #     - 3001:3000/tcp
+  #   networks:
+  #     default:
+  #       ipv4_address: 172.22.0.102
+  #   env_file:
+  #     - ./envfiles/grafana.env
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.backend=grafana"
+  #     - "traefik.frontend.rule=Host:grafana.${DOMAINNAME}"
+  #     - "traefik.port=3000"
+  #     - "traefik.protocol=http"
+  #     - "traefik.docker.network=traefik_proxy"
 
   mosquitto:
     container_name: mosquitto
@@ -189,22 +226,54 @@ services:
       - "traefik.protocol=ws"
 #      - 'traefik.frontend.entryPoints=https'
 
-  glances:
-    container_name: glances
-    image: vimagick/glances
-    volumes:
-      - ${USERDIR}/docker/glances/:/etc/glances
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+  piwigo:
+    image: linuxserver/piwigo
+    restart: always
+    privileged: true
     environment:
-      - GLANCES_OPT=-w
-#    net: host
-#    environment:
       - PUID=${PUID}
       - PGID=${PGID}
-    restart: always
-    network_mode: "host"
+      - TZ=${TZ}
     ports:
-      - "61208:61208"
+      - "8088:80"
+    links:
+      - db
+    # depends_on:
+    #   - db
+    volumes:
+      - ${USERDIR}/docker/piwigo1:/config/www/gallery/_data/i
+      - type: bind
+        source: ${USERDIR}/docker/piwigo1/galleries/vesna
+        target: /config/www/gallery/vesna/vesna
+      - type: bind
+        source: ${USERDIR}/docker/piwigo1/galleries/mobile
+        target: /config/www/gallery/vesna/mobile
+      - type: bind
+        source: ${USERDIR}/docker/piwigo1/galleries/shmelek
+        target: /config/www/gallery/shmelek
+      - type: bind
+        source: ${USERDIR}/docker/piwigo1/galleries/khalilkk
+        target: /config/www/gallery/khalilkk
+      - type: bind
+        source: ${USERDIR}/docker/piwigo1/galleries/khabibullins
+        target: /config/www/gallery/khabibullins
+      
+#      - :/var/www/galleries
+
+  # glances:
+  #   container_name: glances
+  #   image: vimagick/glances
+  #   volumes:
+  #     - ${USERDIR}/docker/glances/:/etc/glances
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   environment:
+  #     - GLANCES_OPT=-w
+  #     - PUID=${PUID}
+  #     - PGID=${PGID}
+  #   restart: always
+  #   network_mode: "host"
+  #   ports:
+  #     - "61208:61208"
 
   deconz:
     image: marthoc/deconz
@@ -230,25 +299,25 @@ services:
       - DEBUG_ZDP=0
       - DEBUG_OTAU=0
 
-  motioneye:
-    image: ccrisan/motioneye:master-amd64
-    container_name: motioneye
-    ports:
-      - "8081:8081"
-      - "8765:8765"
-    volumes:
-      - ${USERDIR}/docker/motion/etc:/etc/motioneye
-      - ${USERDIR}/docker/motion/media:/var/lib/motioneye
-    networks:
-      - traefik_proxy
-      - default
-    labels:
-      - "traefik.enable=true"
-      - "traefik.port=8765"
-      - "traefik.protocol=http"
-      - "traefik.backend=cctv"
-      - "traefik.frontend.rule=Host:cctv.${DOMAINNAME}"
-      - "traefik.docker.network=traefik_proxy"
+  # motioneye:
+  #   image: ccrisan/motioneye:master-amd64
+  #   container_name: motioneye
+  #   ports:
+  #     - "8081:8081"
+  #     - "8765:8765"
+  #   volumes:
+  #     - ${USERDIR}/docker/motion/etc:/etc/motioneye
+  #     - ${USERDIR}/docker/motion/media:/var/lib/motioneye
+  #   networks:
+  #     - traefik_proxy
+  #     - default
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.port=8765"
+  #     - "traefik.protocol=http"
+  #     - "traefik.backend=cctv"
+  #     - "traefik.frontend.rule=Host:cctv.${DOMAINNAME}"
+  #     - "traefik.docker.network=traefik_proxy"
 
   ghost:
     image: ghost:latest
@@ -322,15 +391,15 @@ services:
     env_file:
      - ./envfiles/pma.env
     networks:
-      - traefik_proxy
+#      - traefik_proxy
       - default
-    labels:
-      - "traefik.enable=true"
-      - "traefik.backend=pma"
-      - "traefik.frontend.rule=Host:pma.${DOMAINNAME}"
-      - "traefik.port=80"
-      - "traefik.docker.network=traefik_proxy" 
-      - "traefik.protocol=http"
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.backend=pma"
+#      - "traefik.frontend.rule=Host:pma.${DOMAINNAME}"
+#      - "traefik.port=80"
+#      - "traefik.docker.network=traefik_proxy" 
+#      - "traefik.protocol=http"
 
   cloudberry-backup:
     hostname: cloudberry
@@ -368,75 +437,62 @@ services:
       - "traefik.docker.network=traefik_proxy"
       - "traefik.protocol=http"
 
-  netdata:
-    container_name: netdata
-    image: netdata/netdata
-#    hostname: example.com # set to fqdn of host
-    ports:
-      - 19999:19999
-    networks:
-      - traefik_proxy
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - apparmor:unconfined
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    labels:
-      - "traefik.enable=true"
-      - "traefik.backend=netdata"
-      - "traefik.frontend.rule=Host:netdata.${DOMAINNAME}"
-#      - "traefik.frontend.rule=Host:${DOMAINNAME}; PathPrefixStrip: /portainer"
-      - "traefik.port=19999"
-      - "traefik.docker.network=traefik_proxy"
-      - "traefik.frontend.headers.SSLRedirect=true"
-      - "traefik.frontend.headers.STSSeconds=315360000"
-      - "traefik.frontend.headers.browserXSSFilter=true"
-      - "traefik.frontend.headers.contentTypeNosniff=true"
-      - "traefik.frontend.headers.forceSTSHeader=true"
-      - "traefik.frontend.headers.SSLHost=example.com"
-      - "traefik.frontend.headers.STSIncludeSubdomains=true"
-      - "traefik.frontend.headers.STSPreload=true"
-      - "traefik.frontend.headers.frameDeny=true"
+  # postgres:
+  #   driver: local
 
-#  guacamole3:
-#    image: oznu/guacamole
-#    container_name: guacamole3
-#    volumes:
-#      - postgres:/config
-#    ports:
-#      - 8085:8080
-
-  machinery:
-    container_name: ker-machinery
-    image: kerberos/machinery
-    ports:
-    - "8889:8889" 
-    volumes:
-    - kerberos-config:/etc/opt/kerberosio/config
-    - kerberos-capture:/etc/opt/kerberosio/capture
-    - kerberos-logs:/etc/opt/kerberosio/logs
-
-  web:
-    container_name: kerberos
-    image: kerberos/web
+  wiki:
+    image: requarks/wiki:2
+    links:
+      - db
     environment:
-    - KERBEROSIO_SECURE_SSL=false
+      DB_TYPE: mariadb
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: "wikijs"
+      DB_PASS: "wikijs111!"
+      DB_NAME: "wikijs"
+    restart: unless-stopped
     ports:
-    - "8082:80"
-    volumes:
-    - kerberos-config:/etc/opt/kerberosio/config
-    - kerberos-capture:/etc/opt/kerberosio/capture
-    - kerberos-logs:/etc/opt/kerberosio/logs
+      - "3000:3000"
+    networks:
+      - default
+      - traefik_proxy
+    labels:
+      # The following lines are valid for Traefik version 1.x:
+      - "traefik.enable=true"
+      - "traefik.backend=wiki"
+      - "traefik.frontend.rule=Host:wiki.${DOMAINNAME}"  
+#      - "traefik.frontend.rule=Host:${DOMAINNAME}; PathPrefixStrip: /portainer"
+      - "traefik.port=3000"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.protocol=http"
 
-volumes:
-  kerberos-config:
-  kerberos-capture:
-  kerberos-logs:
-  postgres:
-    driver: local
+#  synapse:
+#    build:
+#        context: ../..
+#        dockerfile: docker/Dockerfile
+#    image: docker.io/matrixdotorg/synapse:latest
+    # Since synapse does not retry to connect to the database, restart upon
+    # failure
+#    restart: unless-stopped
+    # See the readme for a full documentation of the environment settings
+#    environment:
+#      - SYNAPSE_CONFIG_PATH=${USERDIR}/docker/synapse/
+#    volumes:
+      # You may either store all the files in a local folder
+#      - ${USERDIR}/docker/synapse/matrix-config:/etc
+#      - ${USERDIR}/docker/synapse/files:/data
+#    depends_on:
+#      - db
+#    networks:
+#      - traefik_proxy
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.backend=matrix"
+#      - "traefik.frontend.rule=Host:matrix.${DOMAINNAME}"  
+#      - "traefik.port=8008"
+#      - "traefik.docker.network=traefik_proxy"
+#      - "traefik.protocol=http"
 
 networks:
   traefik_proxy:
